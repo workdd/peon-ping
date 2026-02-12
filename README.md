@@ -59,22 +59,23 @@ Need to mute sounds and notifications during a meeting or pairing session? Two o
 | Method | Command | When |
 |---|---|---|
 | **Slash command** | `/peon-ping-toggle` | While working in Claude Code |
-| **CLI** | `peon --toggle` | From any terminal tab |
+| **CLI** | `peon toggle` | From any terminal tab |
 
 Other CLI commands:
 
 ```bash
-peon --pause              # Mute sounds
-peon --resume             # Unmute sounds
-peon --status             # Check if paused or active
-peon --packs              # List available sound packs
-peon --pack <name>        # Switch to a specific pack
-peon --pack               # Cycle to the next pack
-peon --notifications-on   # Enable desktop notifications
-peon --notifications-off  # Disable desktop notifications
+peon pause                # Mute sounds
+peon resume               # Unmute sounds
+peon status               # Check if paused or active
+peon packs list           # List installed sound packs
+peon packs use <name>     # Switch to a specific pack
+peon packs next           # Cycle to the next pack
+peon packs remove <p1,p2> # Remove specific packs
+peon notifications on     # Enable desktop notifications
+peon notifications off    # Disable desktop notifications
 ```
 
-Tab completion is supported — type `peon --pack <TAB>` to see available pack names.
+Tab completion is supported — type `peon packs use <TAB>` to see available pack names.
 
 Pausing mutes sounds and desktop notifications instantly. Persists across sessions until you resume. Tab titles remain active when paused.
 
@@ -139,9 +140,9 @@ peon-ping works with any agentic IDE that supports hooks. Adapters translate IDE
 Install all with `--all`, or switch packs anytime:
 
 ```bash
-peon --pack glados                # switch to a specific pack
-peon --pack                       # cycle to the next pack
-peon --packs                      # list all installed packs
+peon packs use glados             # switch to a specific pack
+peon packs next                   # cycle to the next pack
+peon packs list                   # list all installed packs
 ```
 
 Want to add your own pack? See the [full guide at openpeon.com/create](https://openpeon.com/create) or [CONTRIBUTING.md](CONTRIBUTING.md).

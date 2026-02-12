@@ -274,13 +274,13 @@ terminal_is_focused() {
 # --- CLI subcommands (must come before INPUT=$(cat) which blocks on stdin) ---
 PAUSED_FILE="$PEON_DIR/.paused"
 case "${1:-}" in
-  --pause)   touch "$PAUSED_FILE"; echo "peon-ping: sounds paused"; exit 0 ;;
-  --resume)  rm -f "$PAUSED_FILE"; echo "peon-ping: sounds resumed"; exit 0 ;;
-  --toggle)
+  pause)   touch "$PAUSED_FILE"; echo "peon-ping: sounds paused"; exit 0 ;;
+  resume)  rm -f "$PAUSED_FILE"; echo "peon-ping: sounds resumed"; exit 0 ;;
+  toggle)
     if [ -f "$PAUSED_FILE" ]; then rm -f "$PAUSED_FILE"; echo "peon-ping: sounds resumed"
     else touch "$PAUSED_FILE"; echo "peon-ping: sounds paused"; fi
     exit 0 ;;
-  --status)
+  status)
     [ -f "$PAUSED_FILE" ] && echo "peon-ping: paused" || echo "peon-ping: active"
     python3 -c "
 import json
@@ -292,8 +292,10 @@ except:
     print('peon-ping: desktop notifications on')
 "
     exit 0 ;;
-  --notifications-on)
-    python3 -c "
+  notifications)
+    case "${2:-}" in
+      on)
+        python3 -c "
 import json
 config_path = '$CONFIG'
 try:
@@ -304,9 +306,9 @@ cfg['desktop_notifications'] = True
 json.dump(cfg, open(config_path, 'w'), indent=2)
 print('peon-ping: desktop notifications on')
 "
-    exit 0 ;;
-  --notifications-off)
-    python3 -c "
+        exit 0 ;;
+      off)
+        python3 -c "
 import json
 config_path = '$CONFIG'
 try:
@@ -317,9 +319,14 @@ cfg['desktop_notifications'] = False
 json.dump(cfg, open(config_path, 'w'), indent=2)
 print('peon-ping: desktop notifications off')
 "
-    exit 0 ;;
-  --packs)
-    python3 -c "
+        exit 0 ;;
+      *)
+        echo "Usage: peon notifications <on|off>" >&2; exit 1 ;;
+    esac ;;
+  packs)
+    case "${2:-}" in
+      list)
+        python3 -c "
 import json, os, glob
 config_path = '$CONFIG'
 try:
@@ -338,12 +345,45 @@ for d in sorted(os.listdir(packs_dir)):
             print(f'  {name:24s} {display}{marker}')
             break
 "
-    exit 0 ;;
-  --pack)
-    PACK_ARG="${2:-}"
-    if [ -z "$PACK_ARG" ]; then
-      # No argument — cycle to next pack alphabetically
-      python3 -c "
+        exit 0 ;;
+      use)
+        PACK_ARG="${3:-}"
+        if [ -z "$PACK_ARG" ]; then
+          echo "Usage: peon packs use <name>" >&2; exit 1
+        fi
+        python3 -c "
+import json, os, glob, sys
+config_path = '$CONFIG'
+pack_arg = '$PACK_ARG'
+packs_dir = '$PEON_DIR/packs'
+names = sorted([
+    d for d in os.listdir(packs_dir)
+    if os.path.isdir(os.path.join(packs_dir, d)) and (
+        os.path.exists(os.path.join(packs_dir, d, 'openpeon.json')) or
+        os.path.exists(os.path.join(packs_dir, d, 'manifest.json'))
+    )
+])
+if pack_arg not in names:
+    print(f'Error: pack \"{pack_arg}\" not found.', file=sys.stderr)
+    print(f'Available packs: {\", \".join(names)}', file=sys.stderr)
+    sys.exit(1)
+try:
+    cfg = json.load(open(config_path))
+except:
+    cfg = {}
+cfg['active_pack'] = pack_arg
+json.dump(cfg, open(config_path, 'w'), indent=2)
+display = pack_arg
+for mname in ('openpeon.json', 'manifest.json'):
+    mpath = os.path.join(packs_dir, pack_arg, mname)
+    if os.path.exists(mpath):
+        display = json.load(open(mpath)).get('display_name', pack_arg)
+        break
+print(f'peon-ping: switched to {pack_arg} ({display})')
+" || exit 1
+        exit 0 ;;
+      next)
+        python3 -c "
 import json, os, glob
 config_path = '$CONFIG'
 try:
@@ -377,44 +417,11 @@ for mname in ('openpeon.json', 'manifest.json'):
         break
 print(f'peon-ping: switched to {next_pack} ({display})')
 "
-    else
-      # Argument given — set specific pack
-      python3 -c "
-import json, os, glob, sys
-config_path = '$CONFIG'
-pack_arg = '$PACK_ARG'
-packs_dir = '$PEON_DIR/packs'
-names = sorted([
-    d for d in os.listdir(packs_dir)
-    if os.path.isdir(os.path.join(packs_dir, d)) and (
-        os.path.exists(os.path.join(packs_dir, d, 'openpeon.json')) or
-        os.path.exists(os.path.join(packs_dir, d, 'manifest.json'))
-    )
-])
-if pack_arg not in names:
-    print(f'Error: pack \"{pack_arg}\" not found.', file=sys.stderr)
-    print(f'Available packs: {\", \".join(names)}', file=sys.stderr)
-    sys.exit(1)
-try:
-    cfg = json.load(open(config_path))
-except:
-    cfg = {}
-cfg['active_pack'] = pack_arg
-json.dump(cfg, open(config_path, 'w'), indent=2)
-display = pack_arg
-for mname in ('openpeon.json', 'manifest.json'):
-    mpath = os.path.join(packs_dir, pack_arg, mname)
-    if os.path.exists(mpath):
-        display = json.load(open(mpath)).get('display_name', pack_arg)
-        break
-print(f'peon-ping: switched to {pack_arg} ({display})')
-" || exit 1
-    fi
-    exit 0 ;;
-  --remove)
-    REMOVE_ARG="${2:-}"
-    if [ -n "$REMOVE_ARG" ]; then
-      PACKS_TO_REMOVE=$(python3 -c "
+        exit 0 ;;
+      remove)
+        REMOVE_ARG="${3:-}"
+        if [ -n "$REMOVE_ARG" ]; then
+          PACKS_TO_REMOVE=$(python3 -c "
 import json, os, sys
 
 config_path = '$CONFIG'
@@ -443,7 +450,7 @@ for p in requested:
     if p not in installed:
         errors.append(f'Pack \"{p}\" not found.')
     elif p == active:
-        errors.append(f'Cannot remove \"{p}\" — it is the active pack. Switch first with: peon --pack <other>')
+        errors.append(f'Cannot remove \"{p}\" — it is the active pack. Switch first with: peon packs use <other>')
     else:
         valid.append(p)
 
@@ -459,27 +466,27 @@ if remaining < 1:
 
 print(','.join(valid))
 " 2>&1) || { echo "$PACKS_TO_REMOVE" >&2; exit 1; }
-    else
-      echo "Usage: peon --remove <pack1,pack2,...>" >&2
-      echo "Run 'peon --packs' to see installed packs." >&2
-      exit 1
-    fi
+        else
+          echo "Usage: peon packs remove <pack1,pack2,...>" >&2
+          echo "Run 'peon packs list' to see installed packs." >&2
+          exit 1
+        fi
 
-    # If we got here with packs to remove, confirm and delete
-    if [ -z "$PACKS_TO_REMOVE" ]; then
-      exit 0
-    fi
+        # If we got here with packs to remove, confirm and delete
+        if [ -z "$PACKS_TO_REMOVE" ]; then
+          exit 0
+        fi
 
-    # Count packs
-    PACK_COUNT=$(echo "$PACKS_TO_REMOVE" | tr ',' '\n' | wc -l | tr -d ' ')
-    read -r -p "Remove ${PACK_COUNT} pack(s)? [y/N] " CONFIRM
-    case "$CONFIRM" in
-      [yY]|[yY][eE][sS]) ;;
-      *) echo "Cancelled."; exit 0 ;;
-    esac
+        # Count packs
+        PACK_COUNT=$(echo "$PACKS_TO_REMOVE" | tr ',' '\n' | wc -l | tr -d ' ')
+        read -r -p "Remove ${PACK_COUNT} pack(s)? [y/N] " CONFIRM
+        case "$CONFIRM" in
+          [yY]|[yY][eE][sS]) ;;
+          *) echo "Cancelled."; exit 0 ;;
+        esac
 
-    # Delete pack directories and clean config
-    python3 -c "
+        # Delete pack directories and clean config
+        python3 -c "
 import json, os, shutil
 
 config_path = '$CONFIG'
@@ -503,28 +510,36 @@ if rotation:
     cfg['pack_rotation'] = [p for p in rotation if p not in to_remove]
     json.dump(cfg, open(config_path, 'w'), indent=2)
 "
-    exit 0 ;;
-  --help|-h)
+        exit 0 ;;
+      *)
+        echo "Usage: peon packs <list|use|next|remove>" >&2; exit 1 ;;
+    esac ;;
+  help|--help|-h)
     cat <<'HELPEOF'
 Usage: peon <command>
 
 Commands:
-  --pause              Mute sounds
-  --resume             Unmute sounds
-  --toggle             Toggle mute on/off
-  --status             Check if paused or active
-  --packs              List available sound packs
-  --pack <name>        Switch to a specific pack
-  --pack               Cycle to the next pack
-  --remove <p1,p2>     Remove specific packs
-  --notifications-on   Enable desktop notifications
-  --notifications-off  Disable desktop notifications
-  --help               Show this help
+  pause                Mute sounds
+  resume               Unmute sounds
+  toggle               Toggle mute on/off
+  status               Check if paused or active
+  notifications on     Enable desktop notifications
+  notifications off    Disable desktop notifications
+  help                 Show this help
+
+Pack management:
+  packs list           List installed sound packs
+  packs use <name>     Switch to a specific pack
+  packs next           Cycle to the next pack
+  packs remove <p1,p2> Remove specific packs
 HELPEOF
     exit 0 ;;
   --*)
     echo "Unknown option: $1" >&2
-    echo "Run 'peon --help' for usage." >&2; exit 1 ;;
+    echo "Run 'peon help' for usage." >&2; exit 1 ;;
+  ?*)
+    echo "Unknown command: $1" >&2
+    echo "Run 'peon help' for usage." >&2; exit 1 ;;
 esac
 
 # If no CLI arg was given and stdin is a terminal (not a pipe from Claude Code),
@@ -532,7 +547,7 @@ esac
 if [ -t 0 ]; then
   echo "Usage: peon <command>"
   echo ""
-  echo "Run 'peon --help' for full command list."
+  echo "Run 'peon help' for full command list."
   exit 0
 fi
 
@@ -812,7 +827,7 @@ fi
 
 # --- Show pause status on SessionStart ---
 if [ "$EVENT" = "SessionStart" ] && [ "$PAUSED" = "true" ]; then
-  echo "peon-ping: sounds paused — run 'peon --resume' or '/peon-ping-toggle' to unpause" >&2
+  echo "peon-ping: sounds paused — run 'peon resume' or '/peon-ping-toggle' to unpause" >&2
 fi
 
 # --- Build tab title ---

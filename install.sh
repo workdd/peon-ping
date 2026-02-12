@@ -493,8 +493,8 @@ echo ""
 echo "Quick controls:"
 echo "  /peon-ping-toggle  — toggle sounds in Claude Code"
 if [ "$LOCAL_MODE" = false ]; then
-  echo "  peon --toggle      — toggle sounds from any terminal"
-  echo "  peon --status      — check if sounds are paused"
+  echo "  peon toggle        — toggle sounds from any terminal"
+  echo "  peon status        — check if sounds are paused"
 fi
 echo ""
 echo "Ready to work!"
