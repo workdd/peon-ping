@@ -4,12 +4,34 @@
 # Re-running updates core files; sounds are version-controlled in the repo
 set -euo pipefail
 
-INSTALL_DIR="$HOME/.claude/hooks/peon-ping"
-SETTINGS="$HOME/.claude/settings.json"
-REPO_BASE="https://raw.githubusercontent.com/tonyyont/peon-ping/main"
+LOCAL_MODE=false
+INSTALL_ALL=false
+CUSTOM_PACKS=""
+for arg in "$@"; do
+  case "$arg" in
+    --local) LOCAL_MODE=true ;;
+    --all) INSTALL_ALL=true ;;
+    --packs=*) CUSTOM_PACKS="${arg#--packs=}" ;;
+  esac
+done
 
-# All available sound packs (add new packs here)
-PACKS="peon peon_fr peon_pl peasant peasant_fr ra2_soviet_engineer sc_battlecruiser sc_kerrigan sc_terran sc_scv sc_firebat sc_medic sc_tank sc_vessel"
+if [ "$LOCAL_MODE" = true ]; then
+  BASE_DIR="$PWD/.claude"
+else
+  BASE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+fi
+INSTALL_DIR="$BASE_DIR/hooks/peon-ping"
+SETTINGS="$BASE_DIR/settings.json"
+REPO_BASE="https://raw.githubusercontent.com/PeonPing/peon-ping/main"
+REGISTRY_URL="https://peonping.github.io/registry/index.json"
+
+# Default packs (curated English set installed by default)
+DEFAULT_PACKS="peon peasant glados sc_kerrigan sc_battlecruiser ra2_kirov dota2_axe duke_nukem tf2_engineer hd2_helldiver"
+
+# Fallback pack list (used if registry is unreachable)
+FALLBACK_PACKS="acolyte_de acolyte_ru aoe2 aom_greek brewmaster_ru dota2_axe duke_nukem glados hd2_helldiver molag_bal murloc ocarina_of_time peon peon_cz peon_de peon_es peon_fr peon_pl peon_ru peasant peasant_cz peasant_es peasant_fr peasant_ru ra2_kirov ra2_soviet_engineer ra_soviet rick sc_battlecruiser sc_firebat sc_kerrigan sc_medic sc_scv sc_tank sc_terran sc_vessel sheogorath sopranos tf2_engineer wc2_peasant"
+FALLBACK_REPO="PeonPing/og-packs"
+FALLBACK_REF="v1.1.0"
 
 # --- Platform detection ---
 detect_platform() {
@@ -18,6 +40,8 @@ detect_platform() {
     Linux)
       if grep -qi microsoft /proc/version 2>/dev/null; then
         echo "wsl"
+      elif [ "${REMOTE_CONTAINERS:-}" = "true" ] || [ "${CODESPACES:-}" = "true" ]; then
+        echo "devcontainer"
       else
         echo "linux"
       fi ;;
@@ -42,8 +66,8 @@ else
 fi
 
 # --- Prerequisites ---
-if [ "$PLATFORM" != "mac" ] && [ "$PLATFORM" != "wsl" ]; then
-  echo "Error: peon-ping requires macOS or WSL (Windows Subsystem for Linux)"
+if [ "$PLATFORM" != "mac" ] && [ "$PLATFORM" != "wsl" ] && [ "$PLATFORM" != "linux" ] && [ "$PLATFORM" != "devcontainer" ]; then
+  echo "Error: peon-ping requires macOS, Linux, WSL, or a devcontainer"
   exit 1
 fi
 
@@ -66,10 +90,39 @@ elif [ "$PLATFORM" = "wsl" ]; then
     echo "Error: wslpath is required (should be built into WSL)"
     exit 1
   fi
+elif [ "$PLATFORM" = "devcontainer" ]; then
+  echo "Devcontainer detected. Audio will play through the relay on your host."
+  echo "Run 'peon relay' on your host machine after installation."
+  if ! command -v curl &>/dev/null; then
+    echo "Warning: curl not found. Install curl for relay audio playback."
+  fi
+elif [ "$PLATFORM" = "linux" ]; then
+  LINUX_PLAYER=""
+  for cmd in pw-play paplay ffplay mpv aplay; do
+    if command -v "$cmd" &>/dev/null; then
+      LINUX_PLAYER="$cmd"
+      break
+    fi
+  done
+  if [ -z "$LINUX_PLAYER" ]; then
+    echo "Error: no supported audio player found."
+    echo "Install one of: pw-play (pipewire-audio) paplay (pulseaudio-utils), ffplay (ffmpeg), mpv, aplay (alsa-utils)"
+    exit 1
+  fi
+  echo "Audio player: $LINUX_PLAYER"
+  if command -v notify-send &>/dev/null; then
+    echo "Desktop notifications: notify-send"
+  else
+    echo "Warning: notify-send not found (libnotify-bin). Desktop notifications will be disabled."
+  fi
 fi
 
-if [ ! -d "$HOME/.claude" ]; then
-  echo "Error: ~/.claude/ not found. Is Claude Code installed?"
+if [ ! -d "$BASE_DIR" ]; then
+  if [ "$LOCAL_MODE" = true ]; then
+    echo "Error: .claude/ not found in current directory. Is this a Claude Code project?"
+  else
+    echo "Error: $BASE_DIR not found. Is Claude Code installed?"
+  fi
   exit 1
 fi
 
@@ -82,86 +135,220 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "bash" ]; then
   fi
 fi
 
-# --- Install/update core files ---
-for pack in $PACKS; do
-  mkdir -p "$INSTALL_DIR/packs/$pack/sounds"
-done
+# --- Install/update core tool files ---
+mkdir -p "$INSTALL_DIR"
 
 if [ -n "$SCRIPT_DIR" ]; then
-  # Local clone — copy files directly (including sounds)
-  cp -r "$SCRIPT_DIR/packs/"* "$INSTALL_DIR/packs/"
+  # Local clone — copy core tool files
   cp "$SCRIPT_DIR/peon.sh" "$INSTALL_DIR/"
+  cp "$SCRIPT_DIR/relay.sh" "$INSTALL_DIR/"
   cp "$SCRIPT_DIR/completions.bash" "$INSTALL_DIR/"
+  cp "$SCRIPT_DIR/completions.fish" "$INSTALL_DIR/"
   cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/"
   cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/"
+  if [ -d "$SCRIPT_DIR/adapters" ]; then
+    mkdir -p "$INSTALL_DIR/adapters"
+    cp "$SCRIPT_DIR/adapters/"*.sh "$INSTALL_DIR/adapters/" 2>/dev/null || true
+  fi
+  if [ -f "$SCRIPT_DIR/docs/peon-icon.png" ]; then
+    mkdir -p "$INSTALL_DIR/docs"
+    cp "$SCRIPT_DIR/docs/peon-icon.png" "$INSTALL_DIR/docs/"
+  fi
   if [ "$UPDATING" = false ]; then
     cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/"
   fi
 else
-  # curl|bash — download from GitHub (sounds are version-controlled in repo)
+  # curl|bash — download core tool files from GitHub
   echo "Downloading from GitHub..."
   curl -fsSL "$REPO_BASE/peon.sh" -o "$INSTALL_DIR/peon.sh"
+  curl -fsSL "$REPO_BASE/relay.sh" -o "$INSTALL_DIR/relay.sh"
   curl -fsSL "$REPO_BASE/completions.bash" -o "$INSTALL_DIR/completions.bash"
+  curl -fsSL "$REPO_BASE/completions.fish" -o "$INSTALL_DIR/completions.fish"
   curl -fsSL "$REPO_BASE/VERSION" -o "$INSTALL_DIR/VERSION"
   curl -fsSL "$REPO_BASE/uninstall.sh" -o "$INSTALL_DIR/uninstall.sh"
-  for pack in $PACKS; do
-    curl -fsSL "$REPO_BASE/packs/$pack/manifest.json" -o "$INSTALL_DIR/packs/$pack/manifest.json"
-  done
-  # Download sound files for each pack
-  for pack in $PACKS; do
-    manifest="$INSTALL_DIR/packs/$pack/manifest.json"
-    # Extract sound filenames from manifest and download each one
-    python3 -c "
-import json
-m = json.load(open('$manifest'))
-seen = set()
-for cat in m.get('categories', {}).values():
-    for s in cat.get('sounds', []):
-        f = s['file']
-        if f not in seen:
-            seen.add(f)
-            print(f)
-" | while read -r sfile; do
-      curl -fsSL "$REPO_BASE/packs/$pack/sounds/$sfile" -o "$INSTALL_DIR/packs/$pack/sounds/$sfile" </dev/null
-    done
-  done
+  mkdir -p "$INSTALL_DIR/adapters"
+  curl -fsSL "$REPO_BASE/adapters/codex.sh" -o "$INSTALL_DIR/adapters/codex.sh" 2>/dev/null || true
+  curl -fsSL "$REPO_BASE/adapters/cursor.sh" -o "$INSTALL_DIR/adapters/cursor.sh" 2>/dev/null || true
+  mkdir -p "$INSTALL_DIR/docs"
+  curl -fsSL "$REPO_BASE/docs/peon-icon.png" -o "$INSTALL_DIR/docs/peon-icon.png" 2>/dev/null || true
   if [ "$UPDATING" = false ]; then
     curl -fsSL "$REPO_BASE/config.json" -o "$INSTALL_DIR/config.json"
   fi
 fi
 
+# --- Fetch pack list from registry ---
+PACKS=""
+ALL_PACKS=""
+REGISTRY_JSON=""
+echo "Fetching pack registry..."
+if REGISTRY_JSON=$(curl -fsSL "$REGISTRY_URL" 2>/dev/null); then
+  ALL_PACKS=$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for p in data.get('packs', []):
+    print(p['name'])
+" <<< "$REGISTRY_JSON")
+  TOTAL_AVAILABLE=$(echo "$ALL_PACKS" | wc -l | tr -d ' ')
+  echo "Registry: $TOTAL_AVAILABLE packs available"
+else
+  echo "Warning: Could not fetch registry, using fallback pack list"
+  ALL_PACKS="$FALLBACK_PACKS"
+fi
+
+# Select packs to install
+if [ -n "$CUSTOM_PACKS" ]; then
+  PACKS=$(echo "$CUSTOM_PACKS" | tr ',' ' ')
+  echo "Installing custom packs: $PACKS"
+elif [ "$INSTALL_ALL" = true ]; then
+  PACKS="$ALL_PACKS"
+  echo "Installing all $(echo "$PACKS" | wc -l | tr -d ' ') packs..."
+else
+  PACKS="$DEFAULT_PACKS"
+  echo "Installing $(echo "$PACKS" | wc -w | tr -d ' ') default packs (use --all for all $(echo "$ALL_PACKS" | wc -l | tr -d ' '))"
+fi
+
+# --- Download sound packs ---
+for pack in $PACKS; do
+  mkdir -p "$INSTALL_DIR/packs/$pack/sounds"
+
+  # Get source info from registry (or use fallback)
+  SOURCE_REPO=""
+  SOURCE_REF=""
+  SOURCE_PATH=""
+  if [ -n "$REGISTRY_JSON" ]; then
+    eval "$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for p in data.get('packs', []):
+    if p['name'] == '$pack':
+        print(f\"SOURCE_REPO='{p.get('source_repo', '')}'\")
+        print(f\"SOURCE_REF='{p.get('source_ref', 'main')}'\")
+        print(f\"SOURCE_PATH='{p.get('source_path', '')}'\")
+        break
+" <<< "$REGISTRY_JSON")"
+  fi
+
+  # Fallback if no registry data
+  if [ -z "$SOURCE_REPO" ]; then
+    SOURCE_REPO="$FALLBACK_REPO"
+    SOURCE_REF="$FALLBACK_REF"
+    SOURCE_PATH="$pack"
+  fi
+
+  # Construct base URL for this pack's files
+  if [ -n "$SOURCE_PATH" ]; then
+    PACK_BASE="https://raw.githubusercontent.com/$SOURCE_REPO/$SOURCE_REF/$SOURCE_PATH"
+  else
+    PACK_BASE="https://raw.githubusercontent.com/$SOURCE_REPO/$SOURCE_REF"
+  fi
+
+  # Download manifest
+  if ! curl -fsSL "$PACK_BASE/openpeon.json" -o "$INSTALL_DIR/packs/$pack/openpeon.json" 2>/dev/null; then
+    echo "  Warning: failed to download manifest for $pack" >&2
+    continue
+  fi
+
+  # Download sound files
+  manifest="$INSTALL_DIR/packs/$pack/openpeon.json"
+  python3 -c "
+import json, os
+m = json.load(open('$manifest'))
+seen = set()
+for cat in m.get('categories', {}).values():
+    for s in cat.get('sounds', []):
+        f = s['file']
+        basename = os.path.basename(f)
+        if basename not in seen:
+            seen.add(basename)
+            print(basename)
+" | while read -r sfile; do
+    if ! curl -fsSL "$PACK_BASE/sounds/$sfile" -o "$INSTALL_DIR/packs/$pack/sounds/$sfile" </dev/null 2>/dev/null; then
+      echo "  Warning: failed to download $pack/sounds/$sfile" >&2
+    fi
+  done
+done
+
 chmod +x "$INSTALL_DIR/peon.sh"
+chmod +x "$INSTALL_DIR/relay.sh"
 
 # --- Install skill (slash command) ---
-SKILL_DIR="$HOME/.claude/skills/peon-ping-toggle"
+SKILL_DIR="$BASE_DIR/skills/peon-ping-toggle"
 mkdir -p "$SKILL_DIR"
+if [ "$LOCAL_MODE" = true ]; then
+  SKILL_HOOK_CMD="bash .claude/hooks/peon-ping/peon.sh"
+else
+  SKILL_HOOK_CMD="bash $INSTALL_DIR/peon.sh"
+fi
 if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/skills/peon-ping-toggle" ]; then
   cp "$SCRIPT_DIR/skills/peon-ping-toggle/SKILL.md" "$SKILL_DIR/"
+  if [ "$LOCAL_MODE" = true ]; then
+    sed -i.bak 's|bash "${CLAUDE_CONFIG_DIR:-\$HOME/\.claude}"/hooks/peon-ping/peon\.sh|'"$SKILL_HOOK_CMD"'|g' "$SKILL_DIR/SKILL.md"
+    rm -f "$SKILL_DIR/SKILL.md.bak"
+  fi
 elif [ -z "$SCRIPT_DIR" ]; then
   curl -fsSL "$REPO_BASE/skills/peon-ping-toggle/SKILL.md" -o "$SKILL_DIR/SKILL.md"
+  if [ "$LOCAL_MODE" = true ]; then
+    sed -i.bak 's|bash "${CLAUDE_CONFIG_DIR:-\$HOME/\.claude}"/hooks/peon-ping/peon\.sh|'"$SKILL_HOOK_CMD"'|g' "$SKILL_DIR/SKILL.md"
+    rm -f "$SKILL_DIR/SKILL.md.bak"
+  fi
 else
   echo "Warning: skills/peon-ping-toggle not found in local clone, skipping skill install"
 fi
 
-# --- Add shell alias ---
-ALIAS_LINE='alias peon="bash ~/.claude/hooks/peon-ping/peon.sh"'
-for rcfile in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  if [ -f "$rcfile" ] && ! grep -qF 'alias peon=' "$rcfile"; then
-    echo "" >> "$rcfile"
-    echo "# peon-ping quick controls" >> "$rcfile"
-    echo "$ALIAS_LINE" >> "$rcfile"
-    echo "Added peon alias to $(basename "$rcfile")"
-  fi
-done
+# --- Install config skill ---
+CONFIG_SKILL_DIR="$BASE_DIR/skills/peon-ping-config"
+mkdir -p "$CONFIG_SKILL_DIR"
+if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/skills/peon-ping-config" ]; then
+  cp "$SCRIPT_DIR/skills/peon-ping-config/SKILL.md" "$CONFIG_SKILL_DIR/"
+elif [ -z "$SCRIPT_DIR" ]; then
+  curl -fsSL "$REPO_BASE/skills/peon-ping-config/SKILL.md" -o "$CONFIG_SKILL_DIR/SKILL.md"
+else
+  echo "Warning: skills/peon-ping-config not found in local clone, skipping config skill install"
+fi
 
-# --- Add tab completion ---
-COMPLETION_LINE='[ -f ~/.claude/hooks/peon-ping/completions.bash ] && source ~/.claude/hooks/peon-ping/completions.bash'
-for rcfile in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  if [ -f "$rcfile" ] && ! grep -qF 'peon-ping/completions.bash' "$rcfile"; then
-    echo "$COMPLETION_LINE" >> "$rcfile"
-    echo "Added tab completion to $(basename "$rcfile")"
+# --- Add shell alias (global install only) ---
+if [ "$LOCAL_MODE" = false ]; then
+  ALIAS_LINE="alias peon=\"bash $INSTALL_DIR/peon.sh\""
+  for rcfile in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    if [ -f "$rcfile" ] && [ -w "$rcfile" ] && ! grep -qF 'alias peon=' "$rcfile"; then
+      echo "" >> "$rcfile"
+      echo "# peon-ping quick controls" >> "$rcfile"
+      echo "$ALIAS_LINE" >> "$rcfile"
+      echo "Added peon alias to $(basename "$rcfile")"
+    elif [ -f "$rcfile" ] && [ ! -w "$rcfile" ]; then
+      echo "Warning: $(basename "$rcfile") is not writable, skipping alias" >&2
+    fi
+  done
+
+  # --- Add tab completion ---
+  COMPLETION_LINE="[ -f $INSTALL_DIR/completions.bash ] && source $INSTALL_DIR/completions.bash"
+  for rcfile in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    if [ -f "$rcfile" ] && [ -w "$rcfile" ] && ! grep -qF 'peon-ping/completions.bash' "$rcfile"; then
+      echo "$COMPLETION_LINE" >> "$rcfile"
+      echo "Added tab completion to $(basename "$rcfile")"
+    fi
+  done
+fi
+
+# --- Add fish shell function + completions ---
+FISH_CONFIG="$HOME/.config/fish/config.fish"
+if [ -f "$FISH_CONFIG" ] && [ -w "$FISH_CONFIG" ]; then
+  FISH_FUNC="function peon; bash $INSTALL_DIR/peon.sh \$argv; end"
+  if ! grep -qF 'function peon' "$FISH_CONFIG"; then
+    echo "" >> "$FISH_CONFIG"
+    echo "# peon-ping quick controls" >> "$FISH_CONFIG"
+    echo "$FISH_FUNC" >> "$FISH_CONFIG"
+    echo "Added peon function to config.fish"
   fi
-done
+elif [ -f "$FISH_CONFIG" ] && [ ! -w "$FISH_CONFIG" ]; then
+  echo "Warning: config.fish is not writable, skipping fish function" >&2
+fi
+FISH_COMPLETIONS_DIR="$HOME/.config/fish/completions"
+if [ -d "$HOME/.config/fish" ]; then
+  mkdir -p "$FISH_COMPLETIONS_DIR"
+  cp "$INSTALL_DIR/completions.fish" "$FISH_COMPLETIONS_DIR/peon.fish"
+  echo "Installed fish completions to $FISH_COMPLETIONS_DIR/peon.fish"
+fi
 
 # --- Verify sounds are installed ---
 echo ""
@@ -175,9 +362,9 @@ for pack in $PACKS; do
   fi
 done
 
-# --- Backup existing notify.sh (fresh install only) ---
-if [ "$UPDATING" = false ]; then
-  NOTIFY_SH="$HOME/.claude/hooks/notify.sh"
+# --- Backup existing notify.sh (global fresh install only) ---
+if [ "$LOCAL_MODE" = false ] && [ "$UPDATING" = false ]; then
+  NOTIFY_SH="$BASE_DIR/hooks/notify.sh"
   if [ -f "$NOTIFY_SH" ]; then
     cp "$NOTIFY_SH" "$NOTIFY_SH.backup"
     echo ""
@@ -189,11 +376,17 @@ fi
 echo ""
 echo "Updating Claude Code hooks in settings.json..."
 
+if [ "$LOCAL_MODE" = true ]; then
+  HOOK_CMD=".claude/hooks/peon-ping/peon.sh"
+else
+  HOOK_CMD="$INSTALL_DIR/peon.sh"
+fi
+
 python3 -c "
 import json, os, sys
 
-settings_path = os.path.expanduser('~/.claude/settings.json')
-hook_cmd = os.path.expanduser('~/.claude/hooks/peon-ping/peon.sh')
+settings_path = '$SETTINGS'
+hook_cmd = '$HOOK_CMD'
 
 # Load existing settings
 if os.path.exists(settings_path):
@@ -247,45 +440,63 @@ fi
 
 # --- Test sound ---
 echo ""
-echo "Testing sound..."
-ACTIVE_PACK=$(python3 -c "
-import json, os
+if [ "$PLATFORM" = "devcontainer" ]; then
+  echo "Skipping test sound (devcontainer — start relay on host to test)"
+  echo "  Host: peon relay"
+  echo "  Test: curl -sf http://host.docker.internal:19998/health"
+else
+  echo "Testing sound..."
+  ACTIVE_PACK=$(python3 -c "
+import json
 try:
-    c = json.load(open(os.path.expanduser('~/.claude/hooks/peon-ping/config.json')))
+    c = json.load(open('$INSTALL_DIR/config.json'))
     print(c.get('active_pack', 'peon'))
 except:
     print('peon')
 " 2>/dev/null)
-PACK_DIR="$INSTALL_DIR/packs/$ACTIVE_PACK"
-TEST_SOUND=$({ ls "$PACK_DIR/sounds/"*.wav "$PACK_DIR/sounds/"*.mp3 "$PACK_DIR/sounds/"*.ogg 2>/dev/null || true; } | head -1)
-if [ -n "$TEST_SOUND" ]; then
-  if [ "$PLATFORM" = "mac" ]; then
-    afplay -v 0.3 "$TEST_SOUND"
-  elif [ "$PLATFORM" = "wsl" ]; then
-    wpath=$(wslpath -w "$TEST_SOUND")
-    # Convert backslashes to forward slashes for file:/// URI
-    wpath="${wpath//\\//}"
-    powershell.exe -NoProfile -NonInteractive -Command "
-      Add-Type -AssemblyName PresentationCore
-      \$p = New-Object System.Windows.Media.MediaPlayer
-      \$p.Open([Uri]::new('file:///$wpath'))
-      \$p.Volume = 0.3
-      Start-Sleep -Milliseconds 200
-      \$p.Play()
-      Start-Sleep -Seconds 3
-      \$p.Close()
-    " 2>/dev/null
+  PACK_DIR="$INSTALL_DIR/packs/$ACTIVE_PACK"
+  TEST_SOUND=$({ ls "$PACK_DIR/sounds/"*.wav "$PACK_DIR/sounds/"*.mp3 "$PACK_DIR/sounds/"*.ogg 2>/dev/null || true; } | head -1)
+  if [ -n "$TEST_SOUND" ]; then
+    if [ "$PLATFORM" = "mac" ]; then
+      afplay -v 0.3 "$TEST_SOUND"
+    elif [ "$PLATFORM" = "wsl" ]; then
+      wpath=$(wslpath -w "$TEST_SOUND")
+      # Convert backslashes to forward slashes for file:/// URI
+      wpath="${wpath//\\//}"
+      powershell.exe -NoProfile -NonInteractive -Command "
+        Add-Type -AssemblyName PresentationCore
+        \$p = New-Object System.Windows.Media.MediaPlayer
+        \$p.Open([Uri]::new('file:///$wpath'))
+        \$p.Volume = 0.3
+        Start-Sleep -Milliseconds 200
+        \$p.Play()
+        Start-Sleep -Seconds 3
+        \$p.Close()
+      " 2>/dev/null
+    elif [ "$PLATFORM" = "linux" ]; then
+      if command -v pw-play &>/dev/null; then
+        pw-play --volume=0.3 "$TEST_SOUND" 2>/dev/null
+      elif command -v paplay &>/dev/null; then
+        paplay --volume="$(python3 -c "print(int(0.3 * 65536))")" "$TEST_SOUND" 2>/dev/null
+      elif command -v ffplay &>/dev/null; then
+        ffplay -nodisp -autoexit -volume 30 "$TEST_SOUND" 2>/dev/null
+      elif command -v mpv &>/dev/null; then
+        mpv --no-video --volume=30 "$TEST_SOUND" 2>/dev/null
+      elif command -v aplay &>/dev/null; then
+        aplay -q "$TEST_SOUND" 2>/dev/null
+      fi
+    fi
+    echo "Sound working!"
+  else
+    echo "Warning: No sound files found. Sounds may not play."
   fi
-  echo "Sound working!"
-else
-  echo "Warning: No sound files found. Sounds may not play."
 fi
 
 echo ""
 if [ "$UPDATING" = true ]; then
   echo "=== Update complete! ==="
   echo ""
-  echo "Updated: peon.sh, manifest.json"
+  echo "Updated: peon.sh, sound packs"
   echo "Preserved: config.json, state"
 else
   echo "=== Installation complete! ==="
@@ -298,7 +509,9 @@ fi
 echo ""
 echo "Quick controls:"
 echo "  /peon-ping-toggle  — toggle sounds in Claude Code"
-echo "  peon --toggle      — toggle sounds from any terminal"
-echo "  peon --status      — check if sounds are paused"
+if [ "$LOCAL_MODE" = false ]; then
+  echo "  peon toggle        — toggle sounds from any terminal"
+  echo "  peon status        — check if sounds are paused"
+fi
 echo ""
 echo "Ready to work!"
